@@ -11,6 +11,23 @@
         <testsuite name="all-tests">
             <directory>tests/</directory>
         </testsuite>
+        <testsuite name="no-perf-tests">
+            <directory>tests/</directory>
+            <exclude>tests/Spout/Reader/CSV/ReaderPerfTest.php</exclude>
+            <exclude>tests/Spout/Reader/XLSX/ReaderPerfTest.php</exclude>
+            <exclude>tests/Spout/Reader/ODS/ReaderPerfTest.php</exclude>
+            <exclude>tests/Spout/Writer/CSV/WriterPerfTest.php</exclude>
+            <exclude>tests/Spout/Writer/XLSX/WriterPerfTest.php</exclude>
+            <exclude>tests/Spout/Writer/ODS/WriterPerfTest.php</exclude>
+        </testsuite>
+        <testsuite name="perf-tests">
+            <file>tests/Spout/Reader/CSV/ReaderPerfTest.php</file>
+            <file>tests/Spout/Reader/XLSX/ReaderPerfTest.php</file>
+            <file>tests/Spout/Reader/ODS/ReaderPerfTest.php</file>
+            <file>tests/Spout/Writer/CSV/WriterPerfTest.php</file>
+            <file>tests/Spout/Writer/XLSX/WriterPerfTest.php</file>
+            <file>tests/Spout/Writer/ODS/WriterPerfTest.php</file>
+        </testsuite>
     </testsuites>
 
     <filter>
