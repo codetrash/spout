@@ -2,9 +2,11 @@
 
 namespace Box\Spout\Writer\ODS;
 
+use Box\Spout\Common\Exception\SpoutException;
 use Box\Spout\Common\Type;
 use Box\Spout\Reader\Wrapper\XMLReader;
 use Box\Spout\TestUsingResource;
+use Box\Spout\Writer\Common\Helper\ZipHelper;
 use Box\Spout\Writer\WriterFactory;
 
 /**
@@ -22,7 +24,7 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     public function testAddRowShouldThrowExceptionIfCannotOpenAFileForWriting()
     {
         $fileName = 'file_that_wont_be_written.ods';
-        $this->createUnwritableFolderIfNeeded($fileName);
+        $this->createUnwritableFolderIfNeeded();
         $filePath = $this->getGeneratedUnwritableResourcePath($fileName);
 
         $writer = WriterFactory::create(Type::ODS);
@@ -65,7 +67,7 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     /**
      * @expectedException \Box\Spout\Writer\Exception\WriterAlreadyOpenedException
      */
-    public function testsetShouldCreateNewSheetsAutomaticallyShouldThrowExceptionIfCalledAfterOpeningWriter()
+    public function testSetShouldCreateNewSheetsAutomaticallyShouldThrowExceptionIfCalledAfterOpeningWriter()
     {
         $fileName = 'file_that_wont_be_written.ods';
         $filePath = $this->getGeneratedResourcePath($fileName);
@@ -88,6 +90,39 @@ class WriterTest extends \PHPUnit_Framework_TestCase
         ];
 
         $this->writeToODSFile($dataRows, $fileName);
+    }
+
+    /**
+     * @return void
+     */
+    public function testAddRowShouldCleanupAllFilesIfExceptionIsThrown()
+    {
+        $fileName = 'test_add_row_should_cleanup_all_files_if_exception_thrown.ods';
+        $dataRows = [
+            ['wrong'],
+            [new \stdClass()],
+        ];
+
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        $this->recreateTempFolder();
+        $tempFolderPath = $this->getTempFolderPath();
+
+        /** @var \Box\Spout\Writer\ODS\Writer $writer */
+        $writer = WriterFactory::create(Type::ODS);
+        $writer->setTempFolder($tempFolderPath);
+        $writer->openToFile($resourcePath);
+
+        try {
+            $writer->addRows($dataRows);
+            $this->fail('Exception should have been thrown');
+        } catch (SpoutException $e) {
+            $this->assertFalse(file_exists($fileName), 'Output file should have been deleted');
+
+            $numFiles = iterator_count(new \FilesystemIterator($tempFolderPath, \FilesystemIterator::SKIP_DOTS));
+            $this->assertEquals(0, $numFiles, 'All temp files should have been deleted');
+        }
     }
 
     /**
@@ -136,6 +171,23 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
+    public function testCloseShouldNoopWhenWriterIsNotOpened()
+    {
+        $fileName = 'test_double_close_calls.ods';
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        $writer = WriterFactory::create(Type::ODS);
+        $writer->close(); // This call should not cause any error
+
+        $writer->openToFile($resourcePath);
+        $writer->close();
+        $writer->close(); // This call should not cause any error
+    }
+
+    /**
+     * @return void
+     */
     public function testAddRowShouldWriteGivenDataToSheet()
     {
         $fileName = 'test_add_row_should_write_given_data_to_sheet.ods';
@@ -172,6 +224,25 @@ class WriterTest extends \PHPUnit_Framework_TestCase
                 foreach ($dataRow as $cellValue) {
                     $this->assertValueWasWritten($fileName, $cellValue);
                 }
+            }
+        }
+    }
+
+    /**
+     * @return void
+     */
+    public function testAddRowShouldSupportAssociativeArrays()
+    {
+        $fileName = 'test_add_row_should_support_associative_arrays.ods';
+        $dataRows = [
+            ['foo' => 'ods--11', 'bar' => 'ods--12'],
+        ];
+
+        $this->writeToODSFile($dataRows, $fileName);
+
+        foreach ($dataRows as $dataRow) {
+            foreach ($dataRow as $cellValue) {
+                $this->assertValueWasWritten($fileName, $cellValue);
             }
         }
     }
@@ -350,7 +421,7 @@ class WriterTest extends \PHPUnit_Framework_TestCase
 
         $this->writeToODSFile($dataRows, $fileName);
 
-        $this->assertValueWasWritten($fileName, 'I&#039;m in &quot;great&quot; mood', 'Quotes should be escaped');
+        $this->assertValueWasWritten($fileName, 'I\'m in "great" mood', 'Quotes should not be escaped');
         $this->assertValueWasWritten($fileName, 'This &lt;must&gt; be escaped &amp; tested', '<, > and & should be escaped');
     }
 
@@ -366,6 +437,30 @@ class WriterTest extends \PHPUnit_Framework_TestCase
 
         $this->assertValueWasWrittenToSheet($fileName, 1, 'I have');
         $this->assertValueWasWrittenToSheet($fileName, 1, 'a dream');
+    }
+
+    /**
+     * @return void
+     */
+    public function testGeneratedFileShouldHaveTheCorrectMimeType()
+    {
+        // Only PHP7+ gives the correct mime type since it requires adding
+        // uncompressed files to the final archive (which support was added in PHP7)
+        if (!ZipHelper::canChooseCompressionMethod()) {
+            $this->markTestSkipped(
+                'The PHP version used does not support setting the compression method of archived files,
+                resulting in the mime type to be detected incorrectly.'
+            );
+        }
+
+        $fileName = 'test_mime_type.ods';
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+        $dataRow = ['foo'];
+
+        $this->writeToODSFile([$dataRow], $fileName);
+
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
+        $this->assertEquals('application/vnd.oasis.opendocument.spreadsheet', $finfo->file($resourcePath));
     }
 
     /**
@@ -494,10 +589,9 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     private function moveReaderToCorrectTableNode($fileName, $sheetIndex)
     {
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToSheetFile = $resourcePath . '#content.xml';
 
         $xmlReader = new XMLReader();
-        $xmlReader->open('zip://' . $pathToSheetFile);
+        $xmlReader->openFileInZip($resourcePath, 'content.xml');
         $xmlReader->readUntilNodeFound('table:table');
 
         for ($i = 1; $i < $sheetIndex; $i++) {

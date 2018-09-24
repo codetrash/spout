@@ -164,7 +164,43 @@ class GlobalFunctionsHelper
      */
     public function file_get_contents($filePath)
     {
-        return file_get_contents($filePath);
+        $realFilePath = $this->convertToUseRealPath($filePath);
+        return file_get_contents($realFilePath);
+    }
+
+    /**
+     * Updates the given file path to use a real path.
+     * This is to avoid issues on some Windows setup.
+     *
+     * @param string $filePath File path
+     * @return string The file path using a real path
+     */
+    protected function convertToUseRealPath($filePath)
+    {
+        $realFilePath = $filePath;
+
+        if ($this->isZipStream($filePath)) {
+            if (preg_match('/zip:\/\/(.*)#(.*)/', $filePath, $matches)) {
+                $documentPath = $matches[1];
+                $documentInsideZipPath = $matches[2];
+                $realFilePath = 'zip://' . realpath($documentPath) . '#' . $documentInsideZipPath;
+            }
+        } else {
+            $realFilePath = realpath($filePath);
+        }
+
+        return $realFilePath;
+    }
+
+    /**
+     * Returns whether the given path is a zip stream.
+     *
+     * @param string $path Path pointing to a document
+     * @return bool TRUE if path is a zip stream, FALSE otherwise
+     */
+    protected function isZipStream($path)
+    {
+        return (strpos($path, 'zip://') === 0);
     }
 
     /**
@@ -217,6 +253,19 @@ class GlobalFunctionsHelper
     }
 
     /**
+     * Wrapper around global function ob_end_clean()
+     * @see ob_end_clean()
+     *
+     * @return void
+     */
+    public function ob_end_clean()
+    {
+        if (ob_get_length() > 0) {
+            ob_end_clean();
+        }
+    }
+
+    /**
      * Wrapper around global function iconv()
      * @see iconv()
      *
@@ -245,32 +294,14 @@ class GlobalFunctionsHelper
     }
 
     /**
-     * Wrapper around global function stream_get_line()
-     * @see stream_get_line()
+     * Wrapper around global function stream_get_wrappers()
+     * @see stream_get_wrappers()
      *
-     * @param resource $handle
-     * @param int $length
-     * @param string|void $ending
-     * @return string|bool
-     */
-    public function stream_get_line($handle, $length, $ending = null)
-    {
-        return stream_get_line($handle, $length, $ending);
-    }
-
-    /**
-     * Wrapper around global function str_getcsv()
-     * @see str_getcsv()
-     *
-     * @param string $input
-     * @param string|void $delimiter
-     * @param string|void $enclosure
-     * @param string|void $escape
      * @return array
      */
-    public function str_getcsv($input, $delimiter = null, $enclosure = null, $escape = null)
+    public function stream_get_wrappers()
     {
-        return str_getcsv($input, $delimiter, $enclosure, $escape);
+        return stream_get_wrappers();
     }
 
     /**

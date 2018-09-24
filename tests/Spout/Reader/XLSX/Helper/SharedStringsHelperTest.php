@@ -85,6 +85,38 @@ class SharedStringsHelperTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
+    public function testGetStringAtIndexShouldWorkWithStringsContainingTextAndHyperlinkInSameCell()
+    {
+        $resourcePath = $this->getResourcePath('one_sheet_with_shared_strings_containing_text_and_hyperlink_in_same_cell.xlsx');
+        $sharedStringsHelper = new SharedStringsHelper($resourcePath);
+
+        $sharedStringsHelper->extractSharedStrings();
+
+        $sharedString = $sharedStringsHelper->getStringAtIndex(0);
+        $this->assertEquals('go to https://github.com please', $sharedString);
+
+        $sharedStringsHelper->cleanup();
+    }
+
+    /**
+     * @return void
+     */
+    public function testGetStringAtIndexShouldNotDoubleDecodeHTMLEntities()
+    {
+        $resourcePath = $this->getResourcePath('one_sheet_with_pre_encoded_html_entities.xlsx');
+        $sharedStringsHelper = new SharedStringsHelper($resourcePath);
+
+        $sharedStringsHelper->extractSharedStrings();
+
+        $sharedString = $sharedStringsHelper->getStringAtIndex(0);
+        $this->assertEquals('quote: &#34; - ampersand: &amp;', $sharedString);
+
+        $sharedStringsHelper->cleanup();
+    }
+
+    /**
+     * @return void
+     */
     public function testGetStringAtIndexWithFileBasedStrategy()
     {
         // force the file-based strategy by setting no memory limit

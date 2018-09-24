@@ -5,6 +5,8 @@ namespace Box\Spout\Writer\XLSX;
 use Box\Spout\Common\Type;
 use Box\Spout\Reader\Wrapper\XMLReader;
 use Box\Spout\TestUsingResource;
+use Box\Spout\Writer\Style\Border;
+use Box\Spout\Writer\Style\BorderBuilder;
 use Box\Spout\Writer\Style\Color;
 use Box\Spout\Writer\Style\Style;
 use Box\Spout\Writer\Style\StyleBuilder;
@@ -124,7 +126,6 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
 
         $fontElements = $fontsDomElement->getElementsByTagName('font');
         $this->assertEquals(3, $fontElements->length, 'There should be 3 associated "font" elements, including the default one.');
-
         // First font should be the default one
         $defaultFontElement = $fontElements->item(0);
         $this->assertChildrenNumEquals(3, $defaultFontElement, 'The default font should only have 3 properties.');
@@ -178,6 +179,53 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
+    public function testAddRowWithStyleShouldApplyStyleToEmptyCellsIfNeeded()
+    {
+        $fileName = 'test_add_row_with_style_should_apply_style_to_empty_cells_if_needed.xlsx';
+        $dataRows = [
+            ['xlsx--11', '', 'xlsx--13'],
+            ['xlsx--21', '', 'xlsx--23'],
+            ['xlsx--31', '', 'xlsx--33'],
+            ['xlsx--41', '', 'xlsx--43'],
+        ];
+
+        $styleWithFont = (new StyleBuilder())->setFontBold()->build();
+        $styleWithBackground = (new StyleBuilder())->setBackgroundColor(Color::BLUE)->build();
+
+        $border = (new BorderBuilder())->setBorderBottom(Color::GREEN)->build();
+        $styleWithBorder = (new StyleBuilder())->setBorder($border)->build();
+
+        $this->writeToXLSXFileWithMultipleStyles($dataRows, $fileName, [null, $styleWithFont, $styleWithBackground, $styleWithBorder]);
+
+        $cellDomElements = $this->getCellElementsFromSheetXmlFile($fileName);
+
+        // The first and second rows should not have a reference to the empty cell
+        // The other rows should have the reference because style should be applied to them
+        // So that's: 2 + 2 + 3 + 3 = 10 cells
+        $this->assertEquals(10, count($cellDomElements));
+
+        // First row has 2 styled cells
+        $this->assertEquals('0', $cellDomElements[0]->getAttribute('s'));
+        $this->assertEquals('0', $cellDomElements[1]->getAttribute('s'));
+
+        // Second row has 2 styled cells
+        $this->assertEquals('1', $cellDomElements[2]->getAttribute('s'));
+        $this->assertEquals('1', $cellDomElements[3]->getAttribute('s'));
+
+        // Third row has 3 styled cells
+        $this->assertEquals('2', $cellDomElements[4]->getAttribute('s'));
+        $this->assertEquals('2', $cellDomElements[5]->getAttribute('s'));
+        $this->assertEquals('2', $cellDomElements[6]->getAttribute('s'));
+
+        // Third row has 3 styled cells
+        $this->assertEquals('3', $cellDomElements[7]->getAttribute('s'));
+        $this->assertEquals('3', $cellDomElements[8]->getAttribute('s'));
+        $this->assertEquals('3', $cellDomElements[9]->getAttribute('s'));
+    }
+
+    /**
+     * @return void
+     */
     public function testAddRowWithStyleShouldReuseDuplicateStyles()
     {
         $fileName = 'test_add_row_with_style_should_reuse_duplicate_styles.xlsx';
@@ -205,7 +253,7 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         ];
         $style = (new StyleBuilder())->setShouldWrapText()->build();
 
-        $this->writeToXLSXFile($dataRows, $fileName,$style);
+        $this->writeToXLSXFile($dataRows, $fileName, $style);
 
         $cellXfsDomElement = $this->getXmlSectionFromStylesXmlFile($fileName, 'cellXfs');
         $xfElement = $cellXfsDomElement->getElementsByTagName('xf')->item(1);
@@ -233,6 +281,239 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * @return void
+     */
+    public function testAddBackgroundColor()
+    {
+        $fileName = 'test_add_background_color.xlsx';
+        $dataRows = [
+            ["BgColor"],
+        ];
+        $style = (new StyleBuilder())->setBackgroundColor(Color::WHITE)->build();
+        $this->writeToXLSXFile($dataRows, $fileName, $style);
+        $fillsDomElement = $this->getXmlSectionFromStylesXmlFile($fileName, 'fills');
+        $this->assertEquals(3, $fillsDomElement->getAttribute('count'), 'There should be 3 fills, including the 2 default ones');
+
+        $fillsElements = $fillsDomElement->getElementsByTagName('fill');
+
+        $thirdFillElement = $fillsElements->item(2); // Zero based
+        $fgColor = $thirdFillElement->getElementsByTagName('fgColor')->item(0)->getAttribute('rgb');
+
+        $this->assertEquals(Color::WHITE, $fgColor, 'The foreground color should equal white');
+
+        $styleXfsElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'cellXfs');
+        $this->assertEquals(2, $styleXfsElements->getAttribute('count'), '2 cell xfs present - a default one and a custom one');
+
+        $customFillId = $styleXfsElements->lastChild->getAttribute('fillId');
+        $this->assertEquals(2, (int)$customFillId, 'The custom fill id should have the index 2');
+    }
+
+    /**
+     * @return void
+     */
+    public function testReuseBackgroundColorSharedDefinition()
+    {
+        $fileName = 'test_add_background_color_shared_definition.xlsx';
+        $dataRows = [
+            ["row-bold-background-red"],
+            ["row-background-red"],
+        ];
+
+        $styles = [
+            (new StyleBuilder())->setBackgroundColor(Color::RED)->setFontBold()->build(),
+            (new StyleBuilder())->setBackgroundColor(Color::RED)->build()
+        ];
+
+        $this->writeToXLSXFileWithMultipleStyles($dataRows, $fileName, $styles);
+
+        $fillsDomElement = $this->getXmlSectionFromStylesXmlFile($fileName, 'fills');
+        $this->assertEquals(
+            3,
+            $fillsDomElement->getAttribute('count'),
+            'There should be 3 fills, including the 2 default ones'
+        );
+
+        $styleXfsElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'cellXfs');
+        $this->assertEquals(
+            3,
+            $styleXfsElements->getAttribute('count'),
+            '3 cell xfs present - a default one and two custom ones'
+        );
+
+        $firstCustomId = $styleXfsElements->childNodes->item(1)->getAttribute('fillId');
+        $this->assertEquals(2, (int)$firstCustomId, 'The first custom fill id should have the index 2');
+
+        $secondCustomId = $styleXfsElements->childNodes->item(2)->getAttribute('fillId');
+        $this->assertEquals(2, (int)$secondCustomId, 'The second custom fill id should have the index 2');
+    }
+
+    /**
+     * @return void
+     */
+    public function testBorders()
+    {
+        $fileName = 'test_borders.xlsx';
+
+        $dataRows = [
+            ['row-with-border-bottom-green-thick-solid'],
+            ['row-without-border'],
+            ['row-with-border-top-red-thin-dashed'],
+        ];
+
+        $borderBottomGreenThickSolid = (new BorderBuilder())
+            ->setBorderBottom(Color::GREEN, Border::WIDTH_THICK, Border::STYLE_SOLID)->build();
+
+
+        $borderTopRedThinDashed = (new BorderBuilder())
+            ->setBorderTop(Color::RED, Border::WIDTH_THIN, Border::STYLE_DASHED)->build();
+
+        $styles =  [
+            (new StyleBuilder())->setBorder($borderBottomGreenThickSolid)->build(),
+            (new StyleBuilder())->build(),
+            (new StyleBuilder())->setBorder($borderTopRedThinDashed)->build(),
+        ];
+
+        $this->writeToXLSXFileWithMultipleStyles($dataRows, $fileName, $styles);
+        $borderElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'borders');
+        $this->assertEquals(3, $borderElements->getAttribute('count'), '3 borders present');
+
+        $styleXfsElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'cellXfs');
+        $this->assertEquals(3, $styleXfsElements->getAttribute('count'), '3 cell xfs present');
+    }
+
+    /**
+     * @return void
+     */
+    public function testBordersCorrectOrder()
+    {
+        // Border should be Left, Right, Top, Bottom
+        $fileName = 'test_borders_correct_order.xlsx';
+
+        $dataRows = [
+            ['I am a teapot'],
+        ];
+
+        $borders = (new BorderBuilder())
+            ->setBorderRight()
+            ->setBorderTop()
+            ->setBorderLeft()
+            ->setBorderBottom()
+            ->build();
+
+        $style = (new StyleBuilder())->setBorder($borders)->build();
+        $this->writeToXLSXFile($dataRows, $fileName, $style);
+        $borderElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'borders');
+
+        $correctOrdering = [
+            'left', 'right', 'top', 'bottom'
+        ];
+
+        /** @var  $borderNode  \DOMElement */
+        foreach ($borderElements->childNodes as $borderNode) {
+            $borderParts = $borderNode->childNodes;
+            $ordering = [];
+
+            /** @var $part \DOMText */
+            foreach ($borderParts as $part) {
+                if ($part instanceof \DOMElement) {
+                    $ordering[] = $part->nodeName;
+                }
+            }
+
+            $this->assertEquals($correctOrdering, $ordering, 'The border parts are in correct ordering');
+        };
+    }
+
+    /**
+     * @return void
+     */
+    public function testSetDefaultRowStyle()
+    {
+        $fileName = 'test_set_default_row_style.xlsx';
+        $dataRows = [['xlsx--11']];
+
+        $defaultFontSize = 50;
+        $defaultStyle = (new StyleBuilder())->setFontSize($defaultFontSize)->build();
+
+        $this->writeToXLSXFileWithDefaultStyle($dataRows, $fileName, $defaultStyle);
+
+        $fontsDomElement = $this->getXmlSectionFromStylesXmlFile($fileName, 'fonts');
+        $fontElements = $fontsDomElement->getElementsByTagName('font');
+        $this->assertEquals(1, $fontElements->length, 'There should only be the default font.');
+
+        $defaultFontElement = $fontElements->item(0);
+        $this->assertFirstChildHasAttributeEquals((string) $defaultFontSize, $defaultFontElement, 'sz', 'val');
+    }
+
+    /**
+     * @return void
+     */
+    public function testReUseBorders()
+    {
+        $fileName = 'test_reuse_borders.xlsx';
+
+        $borderLeft = (new BorderBuilder())->setBorderLeft()->build();
+        $borderLeftStyle = (new StyleBuilder())->setBorder($borderLeft)->build();
+
+        $borderRight = (new BorderBuilder())->setBorderRight(Color::RED, Border::WIDTH_THICK)->build();
+        $borderRightStyle = (new StyleBuilder())->setBorder($borderRight)->build();
+
+        $fontStyle = (new StyleBuilder())->setFontBold()->build();
+        $emptyStyle = (new StyleBuilder())->build();
+
+        $borderRightFontBoldStyle = $borderRightStyle->mergeWith($fontStyle);
+
+        $dataRows = [
+            ['Border-Left'],
+            ['Empty'],
+            ['Font-Bold'],
+            ['Border-Right'],
+            ['Border-Right-Font-Bold'],
+        ];
+
+        $styles = [
+            $borderLeftStyle,
+            $emptyStyle,
+            $fontStyle,
+            $borderRightStyle,
+            $borderRightFontBoldStyle
+        ];
+
+        $this->writeToXLSXFileWithMultipleStyles($dataRows, $fileName, $styles);
+        $borderElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'borders');
+
+        $this->assertEquals(3, $borderElements->getAttribute('count'), '3 borders in count attribute');
+        $this->assertEquals(3, $borderElements->childNodes->length, '3 border childnodes present');
+
+        /** @var \DOMElement $firstBorder */
+        $firstBorder = $borderElements->childNodes->item(1); // 0  = default border
+        $leftStyle = $firstBorder->getElementsByTagName('left')->item(0)->getAttribute('style');
+        $this->assertEquals('medium', $leftStyle, 'Style is medium');
+
+        /** @var \DOMElement $secondBorder */
+        $secondBorder = $borderElements->childNodes->item(2);
+        $rightStyle = $secondBorder->getElementsByTagName('right')->item(0)->getAttribute('style');
+        $this->assertEquals('thick', $rightStyle, 'Style is thick');
+
+        $styleXfsElements = $this->getXmlSectionFromStylesXmlFile($fileName, 'cellXfs');
+
+        // A rather relaxed test
+        // Where a border is applied - the borderId attribute has to be greater than 0
+        $bordersApplied = 0;
+        /** @var \DOMElement $node */
+        foreach ($styleXfsElements->childNodes as $node) {
+            if ($node->getAttribute('applyBorder') == 1) {
+                $bordersApplied++;
+                $this->assertTrue((int)$node->getAttribute('borderId') > 0, 'BorderId is greater than 0');
+            } else {
+                $this->assertTrue((int)$node->getAttribute('borderId') === 0, 'BorderId is 0');
+            }
+        }
+
+        $this->assertEquals(3, $bordersApplied, 'Three borders have been applied');
+    }
+
+    /**
      * @param array $allRows
      * @param string $fileName
      * @param \Box\Spout\Writer\Style\Style $style
@@ -249,6 +530,29 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
 
         $writer->openToFile($resourcePath);
         $writer->addRowsWithStyle($allRows, $style);
+        $writer->close();
+
+        return $writer;
+    }
+
+    /**
+     * @param array $allRows
+     * @param string $fileName
+     * @param \Box\Spout\Writer\Style\Style|null $defaultStyle
+     * @return Writer
+     */
+    private function writeToXLSXFileWithDefaultStyle($allRows, $fileName, $defaultStyle)
+    {
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        /** @var \Box\Spout\Writer\XLSX\Writer $writer */
+        $writer = WriterFactory::create(Type::XLSX);
+        $writer->setShouldUseInlineStrings(true);
+        $writer->setDefaultRowStyle($defaultStyle);
+
+        $writer->openToFile($resourcePath);
+        $writer->addRows($allRows);
         $writer->close();
 
         return $writer;
@@ -293,13 +597,16 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
     private function getXmlSectionFromStylesXmlFile($fileName, $section)
     {
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToStylesXmlFile = $resourcePath . '#xl/styles.xml';
 
         $xmlReader = new XMLReader();
-        $xmlReader->open('zip://' . $pathToStylesXmlFile);
+        $xmlReader->openFileInZip($resourcePath, 'xl/styles.xml');
         $xmlReader->readUntilNodeFound($section);
 
-        return $xmlReader->expand();
+        $xmlSection = $xmlReader->expand();
+
+        $xmlReader->close();
+
+        return $xmlSection;
     }
 
     /**
@@ -311,16 +618,17 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         $cellElements = [];
 
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToStylesXmlFile = $resourcePath . '#xl/worksheets/sheet1.xml';
 
-        $xmlReader = new \XMLReader();
-        $xmlReader->open('zip://' . $pathToStylesXmlFile);
+        $xmlReader = new XMLReader();
+        $xmlReader->openFileInZip($resourcePath, 'xl/worksheets/sheet1.xml');
 
         while ($xmlReader->read()) {
-            if ($xmlReader->nodeType === \XMLReader::ELEMENT && $xmlReader->name === 'c') {
+            if ($xmlReader->isPositionedOnStartingNode('c')) {
                 $cellElements[] = $xmlReader->expand();
             }
         }
+
+        $xmlReader->close();
 
         return $cellElements;
     }

@@ -1,6 +1,7 @@
 <?php
 
 namespace Box\Spout\Reader\Wrapper;
+use DOMNode;
 
 
 /**
@@ -14,51 +15,41 @@ class XMLReader extends \XMLReader
 {
     use XMLInternalErrorsHelper;
 
+    const ZIP_WRAPPER = 'zip://';
+
     /**
-     * Set the URI containing the XML to parse
-     * @see \XMLReader::open
+     * Opens the XML Reader to read a file located inside a ZIP file.
      *
-     * @param string $URI URI pointing to the document
-   	 * @param string|null|void $encoding The document encoding
-   	 * @param int $options A bitmask of the LIBXML_* constants
+     * @param string $zipFilePath Path to the ZIP file
+     * @param string $fileInsideZipPath Relative or absolute path of the file inside the zip
      * @return bool TRUE on success or FALSE on failure
      */
-    public function open($URI, $encoding = null, $options = 0)
+    public function openFileInZip($zipFilePath, $fileInsideZipPath)
     {
         $wasOpenSuccessful = false;
+        $realPathURI = $this->getRealPathURIForFileInZip($zipFilePath, $fileInsideZipPath);
 
-        // HHVM does not check if file exists within zip file
-        // @link https://github.com/facebook/hhvm/issues/5779
-        if ($this->isRunningHHVM() && $this->isZipStream($URI)) {
-            if ($this->fileExistsWithinZip($URI)) {
-                $wasOpenSuccessful = parent::open($URI, $encoding, $options|LIBXML_NONET);
-            }
-        } else {
-            $wasOpenSuccessful = parent::open($URI, $encoding, $options|LIBXML_NONET);
+        // We need to check first that the file we are trying to read really exist because:
+        //  - PHP emits a warning when trying to open a file that does not exist.
+        //  - HHVM does not check if file exists within zip file (@link https://github.com/facebook/hhvm/issues/5779)
+        if ($this->fileExistsWithinZip($realPathURI)) {
+            $wasOpenSuccessful = $this->open($realPathURI, null, LIBXML_NONET);
         }
 
         return $wasOpenSuccessful;
     }
 
     /**
-     * Returns whether the given URI is a zip stream.
+     * Returns the real path for the given path components.
+     * This is useful to avoid issues on some Windows setup.
      *
-     * @param string $URI URI pointing to a document
-     * @return bool TRUE if URI is a zip stream, FALSE otherwise
+     * @param string $zipFilePath Path to the ZIP file
+     * @param string $fileInsideZipPath Relative or absolute path of the file inside the zip
+     * @return string The real path URI
      */
-    protected function isZipStream($URI)
+    public function getRealPathURIForFileInZip($zipFilePath, $fileInsideZipPath)
     {
-        return (strpos($URI, 'zip://') === 0);
-    }
-
-    /**
-     * Returns whether the current environment is HHVM
-     *
-     * @return bool TRUE if running on HHVM, FALSE otherwise
-     */
-    protected function isRunningHHVM()
-    {
-        return defined('HHVM_VERSION');
+        return (self::ZIP_WRAPPER . realpath($zipFilePath) . '#' . $fileInsideZipPath);
     }
 
     /**
@@ -113,9 +104,10 @@ class XMLReader extends \XMLReader
      */
     public function readUntilNodeFound($nodeName)
     {
-        while (($wasReadSuccessful = $this->read()) && ($this->nodeType !== \XMLReader::ELEMENT || $this->name !== $nodeName)) {
-            // do nothing
-        }
+        do {
+            $wasReadSuccessful = $this->read();
+            $isNotPositionedOnStartingNode = !$this->isPositionedOnStartingNode($nodeName);
+        } while ($wasReadSuccessful && $isNotPositionedOnStartingNode);
 
         return $wasReadSuccessful;
     }
@@ -145,7 +137,7 @@ class XMLReader extends \XMLReader
      */
     public function isPositionedOnStartingNode($nodeName)
     {
-        return ($this->nodeType === XMLReader::ELEMENT && $this->name === $nodeName);
+        return $this->isPositionedOnNode($nodeName, XMLReader::ELEMENT);
     }
 
     /**
@@ -154,6 +146,30 @@ class XMLReader extends \XMLReader
      */
     public function isPositionedOnEndingNode($nodeName)
     {
-        return ($this->nodeType === XMLReader::END_ELEMENT && $this->name === $nodeName);
+        return $this->isPositionedOnNode($nodeName, XMLReader::END_ELEMENT);
+    }
+
+    /**
+     * @param string $nodeName
+     * @param int $nodeType
+     * @return bool Whether the XML Reader is currently positioned on the node with given name and type
+     */
+    private function isPositionedOnNode($nodeName, $nodeType)
+    {
+        // In some cases, the node has a prefix (for instance, "<sheet>" can also be "<x:sheet>").
+        // So if the given node name does not have a prefix, we need to look at the unprefixed name ("localName").
+        // @see https://github.com/box/spout/issues/233
+        $hasPrefix = (strpos($nodeName, ':') !== false);
+        $currentNodeName = ($hasPrefix) ? $this->name : $this->localName;
+
+        return ($this->nodeType === $nodeType && $currentNodeName === $nodeName);
+    }
+
+    /**
+     * @return string The name of the current node, un-prefixed
+     */
+    public function getCurrentNodeName()
+    {
+        return $this->localName;
     }
 }

@@ -2,9 +2,11 @@
 
 namespace Box\Spout\Writer\XLSX;
 
+use Box\Spout\Common\Exception\SpoutException;
 use Box\Spout\Common\Type;
 use Box\Spout\TestUsingResource;
 use Box\Spout\Writer\WriterFactory;
+use Box\Spout\Writer\XLSX\Internal\Worksheet;
 
 /**
  * Class WriterTest
@@ -21,7 +23,7 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     public function testAddRowShouldThrowExceptionIfCannotOpenAFileForWriting()
     {
         $fileName = 'file_that_wont_be_written.xlsx';
-        $this->createUnwritableFolderIfNeeded($fileName);
+        $this->createUnwritableFolderIfNeeded();
         $filePath = $this->getGeneratedUnwritableResourcePath($fileName);
 
         $writer = WriterFactory::create(Type::XLSX);
@@ -98,10 +100,56 @@ class WriterTest extends \PHPUnit_Framework_TestCase
     {
         $fileName = 'test_add_row_should_throw_exception_if_unsupported_data_type_passed_in.xlsx';
         $dataRows = [
+            [str_repeat('a', Worksheet::MAX_CHARACTERS_PER_CELL + 1)],
+        ];
+
+        $this->writeToXLSXFile($dataRows, $fileName);
+    }
+
+    /**
+     * @expectedException \Box\Spout\Common\Exception\InvalidArgumentException
+     */
+    public function testAddRowShouldThrowExceptionIfWritingStringExceedingMaxNumberOfCharactersAllowedPerCell()
+    {
+        $fileName = 'test_add_row_should_throw_exception_if_string_exceeds_max_num_chars_allowed_per_cell.xlsx';
+        $dataRows = [
             [new \stdClass()],
         ];
 
         $this->writeToXLSXFile($dataRows, $fileName);
+    }
+
+    /**
+     * @return void
+     */
+    public function testAddRowShouldCleanupAllFilesIfExceptionIsThrown()
+    {
+        $fileName = 'test_add_row_should_cleanup_all_files_if_exception_thrown.xlsx';
+        $dataRows = [
+            ['wrong'],
+            [new \stdClass()],
+        ];
+
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        $this->recreateTempFolder();
+        $tempFolderPath = $this->getTempFolderPath();
+
+        /** @var \Box\Spout\Writer\XLSX\Writer $writer */
+        $writer = WriterFactory::create(Type::XLSX);
+        $writer->setTempFolder($tempFolderPath);
+        $writer->openToFile($resourcePath);
+
+        try {
+            $writer->addRows($dataRows);
+            $this->fail('Exception should have been thrown');
+        } catch (SpoutException $e) {
+            $this->assertFalse(file_exists($fileName), 'Output file should have been deleted');
+
+            $numFiles = iterator_count(new \FilesystemIterator($tempFolderPath, \FilesystemIterator::SKIP_DOTS));
+            $this->assertEquals(0, $numFiles, 'All temp files should have been deleted');
+        }
     }
 
     /**
@@ -144,6 +192,23 @@ class WriterTest extends \PHPUnit_Framework_TestCase
         $writer->close();
 
         $this->assertEquals($firstSheet, $writer->getCurrentSheet(), 'The current sheet should be the first one.');
+    }
+
+    /**
+     * @return void
+     */
+    public function testCloseShouldNoopWhenWriterIsNotOpened()
+    {
+        $fileName = 'test_double_close_calls.xlsx';
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        $writer = WriterFactory::create(Type::XLSX);
+        $writer->close(); // This call should not cause any error
+
+        $writer->openToFile($resourcePath);
+        $writer->close();
+        $writer->close(); // This call should not cause any error
     }
 
     /**
@@ -230,6 +295,48 @@ class WriterTest extends \PHPUnit_Framework_TestCase
                 }
             }
         }
+    }
+
+    /**
+     * @return void
+     */
+    public function testAddRowShouldSupportAssociativeArrays()
+    {
+        $fileName = 'test_add_row_should_support_associative_arrays.xlsx';
+        $dataRows = [
+            ['foo' => 'xlsx--11', 'bar' => 'xlsx--12'],
+        ];
+
+        $this->writeToXLSXFile($dataRows, $fileName);
+
+        foreach ($dataRows as $dataRow) {
+            foreach ($dataRow as $cellValue) {
+                $this->assertInlineDataWasWrittenToSheet($fileName, 1, $cellValue);
+            }
+        }
+    }
+
+    /**
+     * @return void
+     */
+    public function testAddRowShouldNotWriteEmptyRows()
+    {
+        $fileName = 'test_add_row_should_not_write_empty_rows.xlsx';
+        $dataRows = [
+            [''],
+            ['xlsx--21', 'xlsx--22'],
+            ['key' => ''],
+            [''],
+            ['xlsx--51', 'xlsx--52'],
+        ];
+
+        $this->writeToXLSXFile($dataRows, $fileName);
+
+        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'row r="2"');
+        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'row r="5"');
+        $this->assertInlineDataWasNotWrittenToSheet($fileName, 1, 'row r="1"');
+        $this->assertInlineDataWasNotWrittenToSheet($fileName, 1, 'row r="3"');
+        $this->assertInlineDataWasNotWrittenToSheet($fileName, 1, 'row r="4"');
     }
 
     /**
@@ -366,7 +473,7 @@ class WriterTest extends \PHPUnit_Framework_TestCase
 
         $this->writeToXLSXFile($dataRows, $fileName);
 
-        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'I&#039;m in &quot;great&quot; mood', 'Quotes should be escaped');
+        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'I\'m in "great" mood', 'Quotes should not be escaped');
         $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'This &lt;must&gt; be escaped &amp; tested', '<, > and & should be escaped');
     }
 
@@ -375,14 +482,29 @@ class WriterTest extends \PHPUnit_Framework_TestCase
      */
     public function testAddRowShouldEscapeControlCharacters()
     {
-        $fileName = 'test_add_row_should_escape_html_special_characters.xlsx';
+        $fileName = 'test_add_row_should_escape_control_characters.xlsx';
         $dataRows = [
-            ['control\'s '.chr(21).' "character"'],
+            ['control '.chr(21).' character'],
         ];
 
         $this->writeToXLSXFile($dataRows, $fileName);
 
-        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'control&#039;s _x0015_ &quot;character&quot;');
+        $this->assertInlineDataWasWrittenToSheet($fileName, 1, 'control _x0015_ character');
+    }
+
+    /**
+     * @return void
+     */
+    public function testGeneratedFileShouldHaveTheCorrectMimeType()
+    {
+        $fileName = 'test_mime_type.xlsx';
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+        $dataRows = [['foo']];
+
+        $this->writeToXLSXFile($dataRows, $fileName);
+
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
+        $this->assertEquals('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $finfo->file($resourcePath));
     }
 
     /**

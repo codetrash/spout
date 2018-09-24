@@ -5,6 +5,9 @@ namespace Box\Spout\Writer\ODS;
 use Box\Spout\Common\Type;
 use Box\Spout\Reader\Wrapper\XMLReader;
 use Box\Spout\TestUsingResource;
+use Box\Spout\Writer\ODS\Helper\BorderHelper;
+use Box\Spout\Writer\Style\Border;
+use Box\Spout\Writer\Style\BorderBuilder;
 use Box\Spout\Writer\Style\Color;
 use Box\Spout\Writer\Style\Style;
 use Box\Spout\Writer\Style\StyleBuilder;
@@ -115,6 +118,7 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
             ->setFontSize(15)
             ->setFontColor(Color::RED)
             ->setFontName('Cambria')
+            ->setBackgroundColor(Color::GREEN)
             ->build();
 
         $this->writeToODSFileWithMultipleStyles($dataRows, $fileName, [$style, $style2]);
@@ -134,6 +138,7 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         $this->assertFirstChildHasAttributeEquals('15pt', $customFont2Element, 'text-properties', 'fo:font-size');
         $this->assertFirstChildHasAttributeEquals('#' . Color::RED, $customFont2Element, 'text-properties', 'fo:color');
         $this->assertFirstChildHasAttributeEquals('Cambria', $customFont2Element, 'text-properties', 'style:font-name');
+        $this->assertFirstChildHasAttributeEquals('#' . Color::GREEN, $customFont2Element, 'table-cell-properties', 'fo:background-color');
     }
 
     /**
@@ -208,7 +213,7 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         ];
         $style = (new StyleBuilder())->setShouldWrapText()->build();
 
-        $this->writeToODSFile($dataRows, $fileName,$style);
+        $this->writeToODSFile($dataRows, $fileName, $style);
 
         $styleElements = $this->getCellStyleElementsFromContentXmlFile($fileName);
         $this->assertEquals(2, count($styleElements), 'There should be 2 styles (default and custom)');
@@ -237,6 +242,108 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * @return void
+     */
+    public function testAddBackgroundColor()
+    {
+        $fileName = 'test_default_background_style.ods';
+        $dataRows = [
+            ['defaultBgColor'],
+        ];
+
+        $style = (new StyleBuilder())->setBackgroundColor(Color::WHITE)->build();
+        $this->writeToODSFile($dataRows, $fileName, $style);
+
+        $styleElements = $this->getCellStyleElementsFromContentXmlFile($fileName);
+        $this->assertEquals(2, count($styleElements), 'There should be 2 styles (default and custom)');
+
+        $customStyleElement = $styleElements[1];
+        $this->assertFirstChildHasAttributeEquals('#' . Color::WHITE, $customStyleElement, 'table-cell-properties', 'fo:background-color');
+    }
+
+    /**
+     * @return void
+     */
+    public function testBorders()
+    {
+        $fileName = 'test_borders.ods';
+
+        $dataRows = [
+            ['row-with-border-bottom-green-thick-solid'],
+            ['row-without-border'],
+            ['row-with-border-top-red-thin-dashed'],
+        ];
+
+        $borderBottomGreenThickSolid = (new BorderBuilder())
+            ->setBorderBottom(Color::GREEN, Border::WIDTH_THICK, Border::STYLE_SOLID)->build();
+
+
+        $borderTopRedThinDashed = (new BorderBuilder())
+            ->setBorderTop(Color::RED, Border::WIDTH_THIN, Border::STYLE_DASHED)->build();
+
+        $styles =  [
+            (new StyleBuilder())->setBorder($borderBottomGreenThickSolid)->build(),
+            (new StyleBuilder())->build(),
+            (new StyleBuilder())->setBorder($borderTopRedThinDashed)->build(),
+        ];
+
+        $this->writeToODSFileWithMultipleStyles($dataRows, $fileName, $styles);
+
+        $styleElements = $this->getCellStyleElementsFromContentXmlFile($fileName);
+
+        $this->assertEquals(3, count($styleElements), 'There should be 3 styles)');
+
+        // Use reflection for protected members here
+        $widthMap = \ReflectionHelper::getStaticValue('Box\Spout\Writer\ODS\Helper\BorderHelper', 'widthMap');
+        $styleMap = \ReflectionHelper::getStaticValue('Box\Spout\Writer\ODS\Helper\BorderHelper', 'styleMap');
+
+        $expectedFirst = sprintf(
+            '%s %s #%s',
+            $widthMap[Border::WIDTH_THICK],
+            $styleMap[Border::STYLE_SOLID],
+            Color::GREEN
+        );
+
+        $actualFirst = $styleElements[1]
+            ->getElementsByTagName('table-cell-properties')
+            ->item(0)
+            ->getAttribute('fo:border-bottom');
+
+        $this->assertEquals($expectedFirst, $actualFirst);
+
+        $expectedThird = sprintf(
+            '%s %s #%s',
+            $widthMap[Border::WIDTH_THIN],
+            $styleMap[Border::STYLE_DASHED],
+            Color::RED
+        );
+
+        $actualThird = $styleElements[2]
+            ->getElementsByTagName('table-cell-properties')
+            ->item(0)
+            ->getAttribute('fo:border-top');
+
+        $this->assertEquals($expectedThird, $actualThird);
+    }
+
+    /**
+     * @return void
+     */
+    public function testSetDefaultRowStyle()
+    {
+        $fileName = 'test_set_default_row_style.ods';
+        $dataRows = [['ods--11']];
+
+        $defaultFontSize = 50;
+        $defaultStyle = (new StyleBuilder())->setFontSize($defaultFontSize)->build();
+
+        $this->writeToODSFileWithDefaultStyle($dataRows, $fileName, $defaultStyle);
+
+        $textPropertiesElement = $this->getXmlSectionFromStylesXmlFile($fileName, 'style:text-properties');
+        $this->assertEquals($defaultFontSize . 'pt', $textPropertiesElement->getAttribute('fo:font-size'));
+    }
+
+    /**
      * @param array $allRows
      * @param string $fileName
      * @param \Box\Spout\Writer\Style\Style $style
@@ -252,6 +359,28 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
 
         $writer->openToFile($resourcePath);
         $writer->addRowsWithStyle($allRows, $style);
+        $writer->close();
+
+        return $writer;
+    }
+
+    /**
+     * @param array $allRows
+     * @param string $fileName
+     * @param \Box\Spout\Writer\Style\Style|null $defaultStyle
+     * @return Writer
+     */
+    private function writeToODSFileWithDefaultStyle($allRows, $fileName, $defaultStyle)
+    {
+        $this->createGeneratedFolderIfNeeded($fileName);
+        $resourcePath = $this->getGeneratedResourcePath($fileName);
+
+        /** @var \Box\Spout\Writer\XLSX\Writer $writer */
+        $writer = WriterFactory::create(Type::ODS);
+        $writer->setDefaultRowStyle($defaultStyle);
+
+        $writer->openToFile($resourcePath);
+        $writer->addRows($allRows);
         $writer->close();
 
         return $writer;
@@ -296,16 +425,17 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         $cellElements = [];
 
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToStylesXmlFile = $resourcePath . '#content.xml';
 
-        $xmlReader = new \XMLReader();
-        $xmlReader->open('zip://' . $pathToStylesXmlFile);
+        $xmlReader = new XMLReader();
+        $xmlReader->openFileInZip($resourcePath, 'content.xml');
 
         while ($xmlReader->read()) {
-            if ($xmlReader->nodeType === \XMLReader::ELEMENT && $xmlReader->name === 'table:table-cell' && $xmlReader->getAttribute('office:value-type') !== null) {
+            if ($xmlReader->isPositionedOnStartingNode('table:table-cell') && $xmlReader->getAttribute('office:value-type') !== null) {
                 $cellElements[] = $xmlReader->expand();
             }
         }
+
+        $xmlReader->close();
 
         return $cellElements;
     }
@@ -319,16 +449,17 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
         $cellStyleElements = [];
 
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToStylesXmlFile = $resourcePath . '#content.xml';
 
-        $xmlReader = new \XMLReader();
-        $xmlReader->open('zip://' . $pathToStylesXmlFile);
+        $xmlReader = new XMLReader();
+        $xmlReader->openFileInZip($resourcePath, 'content.xml');
 
         while ($xmlReader->read()) {
-            if ($xmlReader->nodeType === \XMLReader::ELEMENT && $xmlReader->name === 'style:style' && $xmlReader->getAttribute('style:family') === 'table-cell') {
+            if ($xmlReader->isPositionedOnStartingNode('style:style') && $xmlReader->getAttribute('style:family') === 'table-cell') {
                 $cellStyleElements[] = $xmlReader->expand();
             }
         }
+
+        $xmlReader->close();
 
         return $cellStyleElements;
     }
@@ -341,10 +472,9 @@ class WriterWithStyleTest extends \PHPUnit_Framework_TestCase
     private function getXmlSectionFromStylesXmlFile($fileName, $section)
     {
         $resourcePath = $this->getGeneratedResourcePath($fileName);
-        $pathToStylesXmlFile = $resourcePath . '#styles.xml';
 
         $xmlReader = new XMLReader();
-        $xmlReader->open('zip://' . $pathToStylesXmlFile);
+        $xmlReader->openFileInZip($resourcePath, 'styles.xml');
         $xmlReader->readUntilNodeFound($section);
 
         return $xmlReader->expand();

@@ -2,7 +2,7 @@
 
 namespace Box\Spout\Reader\XLSX\Helper;
 
-use Box\Spout\Reader\Wrapper\SimpleXMLElement;
+use Box\Spout\Reader\Wrapper\XMLReader;
 use Box\Spout\Reader\XLSX\Sheet;
 
 /**
@@ -13,24 +13,28 @@ use Box\Spout\Reader\XLSX\Sheet;
  */
 class SheetHelper
 {
-    /** Extension for XML files */
-    const XML_EXTENSION = '.xml';
-
     /** Paths of XML files relative to the XLSX file root */
-    const CONTENT_TYPES_XML_FILE_PATH = '[Content_Types].xml';
     const WORKBOOK_XML_RELS_FILE_PATH = 'xl/_rels/workbook.xml.rels';
     const WORKBOOK_XML_FILE_PATH = 'xl/workbook.xml';
 
-    /** Namespaces for the XML files */
-    const MAIN_NAMESPACE_FOR_CONTENT_TYPES_XML = 'http://schemas.openxmlformats.org/package/2006/content-types';
-    const MAIN_NAMESPACE_FOR_WORKBOOK_XML_RELS = 'http://schemas.openxmlformats.org/package/2006/relationships';
-    const MAIN_NAMESPACE_FOR_WORKBOOK_XML = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    /** Definition of XML node names used to parse data */
+    const XML_NODE_WORKBOOK_VIEW = 'workbookView';
+    const XML_NODE_SHEET = 'sheet';
+    const XML_NODE_SHEETS = 'sheets';
+    const XML_NODE_RELATIONSHIP = 'Relationship';
 
-    /** Value of the Override attribute used in [Content_Types].xml to define sheets */
-    const OVERRIDE_CONTENT_TYPES_ATTRIBUTE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
+    /** Definition of XML attributes used to parse data */
+    const XML_ATTRIBUTE_ACTIVE_TAB = 'activeTab';
+    const XML_ATTRIBUTE_R_ID = 'r:id';
+    const XML_ATTRIBUTE_NAME = 'name';
+    const XML_ATTRIBUTE_ID = 'Id';
+    const XML_ATTRIBUTE_TARGET = 'Target';
 
     /** @var string Path of the XLSX file being read */
     protected $filePath;
+
+    /** @var \Box\Spout\Reader\XLSX\ReaderOptions Reader's current options */
+    protected $options;
 
     /** @var \Box\Spout\Reader\XLSX\Helper\SharedStringsHelper Helper to work with shared strings */
     protected $sharedStringsHelper;
@@ -38,20 +42,16 @@ class SheetHelper
     /** @var \Box\Spout\Common\Helper\GlobalFunctionsHelper Helper to work with global functions */
     protected $globalFunctionsHelper;
 
-    /** @var \Box\Spout\Reader\Wrapper\SimpleXMLElement XML element representing the workbook.xml.rels file */
-    protected $workbookXMLRelsAsXMLElement;
-
-    /** @var \Box\Spout\Reader\Wrapper\SimpleXMLElement XML element representing the workbook.xml file */
-    protected $workbookXMLAsXMLElement;
-
     /**
      * @param string $filePath Path of the XLSX file being read
+     * @param \Box\Spout\Reader\XLSX\ReaderOptions $options Reader's current options
      * @param \Box\Spout\Reader\XLSX\Helper\SharedStringsHelper Helper to work with shared strings
      * @param \Box\Spout\Common\Helper\GlobalFunctionsHelper $globalFunctionsHelper
      */
-    public function __construct($filePath, $sharedStringsHelper, $globalFunctionsHelper)
+    public function __construct($filePath, $options, $sharedStringsHelper, $globalFunctionsHelper)
     {
         $this->filePath = $filePath;
+        $this->options = $options;
         $this->sharedStringsHelper = $sharedStringsHelper;
         $this->globalFunctionsHelper = $globalFunctionsHelper;
     }
@@ -65,136 +65,92 @@ class SheetHelper
     public function getSheets()
     {
         $sheets = [];
+        $sheetIndex = 0;
+        $activeSheetIndex = 0; // By default, the first sheet is active
 
-        $contentTypesAsXMLElement = $this->getFileAsXMLElementWithNamespace(
-            self::CONTENT_TYPES_XML_FILE_PATH,
-            self::MAIN_NAMESPACE_FOR_CONTENT_TYPES_XML
-        );
+        $xmlReader = new XMLReader();
+        if ($xmlReader->openFileInZip($this->filePath, self::WORKBOOK_XML_FILE_PATH)) {
+            while ($xmlReader->read()) {
+                if ($xmlReader->isPositionedOnStartingNode(self::XML_NODE_WORKBOOK_VIEW)) {
+                    // The "workbookView" node is located before "sheet" nodes, ensuring that
+                    // the active sheet is known before parsing sheets data.
+                    $activeSheetIndex = (int) $xmlReader->getAttribute(self::XML_ATTRIBUTE_ACTIVE_TAB);
+                } else if ($xmlReader->isPositionedOnStartingNode(self::XML_NODE_SHEET)) {
+                    $isSheetActive = ($sheetIndex === $activeSheetIndex);
+                    $sheets[] = $this->getSheetFromSheetXMLNode($xmlReader, $sheetIndex, $isSheetActive);
+                    $sheetIndex++;
+                } else if ($xmlReader->isPositionedOnEndingNode(self::XML_NODE_SHEETS)) {
+                    // stop reading once all sheets have been read
+                    break;
+                }
+            }
 
-        // find all nodes defining a sheet
-        $sheetNodes = $contentTypesAsXMLElement->xpath('//ns:Override[@ContentType="' . self::OVERRIDE_CONTENT_TYPES_ATTRIBUTE . '"]');
-        $numSheetNodes = count($sheetNodes);
-
-        for ($i = 0; $i < $numSheetNodes; $i++) {
-            $sheetNode = $sheetNodes[$i];
-            $sheetDataXMLFilePath = $sheetNode->getAttribute('PartName');
-
-            $sheets[] = $this->getSheetFromXML($sheetDataXMLFilePath, $i);
+            $xmlReader->close();
         }
 
         return $sheets;
     }
 
     /**
-     * Returns an instance of a sheet, given the path of its data XML file.
-     * We first look at "xl/_rels/workbook.xml.rels" to find the relationship ID of the sheet.
-     * Then we look at "xl/worbook.xml" to find the sheet entry associated to the found ID.
-     * The entry contains the ID and name of the sheet.
+     * Returns an instance of a sheet, given the XML node describing the sheet - from "workbook.xml".
+     * We can find the XML file path describing the sheet inside "workbook.xml.res", by mapping with the sheet ID
+     * ("r:id" in "workbook.xml", "Id" in "workbook.xml.res").
      *
-     * If this piece of data can't be found by parsing the different XML files, the ID will default
-     * to the sheet index, based on order in [Content_Types].xml. Similarly, the sheet's name will
-     * default to the data sheet XML file name ("xl/worksheets/sheet2.xml" => "sheet2").
-     *
-     * @param string $sheetDataXMLFilePath Path of the sheet data XML file as in [Content_Types].xml
-     * @param int $sheetIndexZeroBased Index of the sheet, based on order in [Content_Types].xml (zero-based)
+     * @param \Box\Spout\Reader\Wrapper\XMLReader $xmlReaderOnSheetNode XML Reader instance, pointing on the node describing the sheet, as defined in "workbook.xml"
+     * @param int $sheetIndexZeroBased Index of the sheet, based on order of appearance in the workbook (zero-based)
+     * @param bool $isSheetActive Whether this sheet was defined as active
      * @return \Box\Spout\Reader\XLSX\Sheet Sheet instance
      */
-    protected function getSheetFromXML($sheetDataXMLFilePath, $sheetIndexZeroBased)
+    protected function getSheetFromSheetXMLNode($xmlReaderOnSheetNode, $sheetIndexZeroBased, $isSheetActive)
     {
-        $sheetName = $this->getDefaultSheetName($sheetDataXMLFilePath);
+        $sheetId = $xmlReaderOnSheetNode->getAttribute(self::XML_ATTRIBUTE_R_ID);
+        $escapedSheetName = $xmlReaderOnSheetNode->getAttribute(self::XML_ATTRIBUTE_NAME);
 
-        /*
-         * In [Content_Types].xml, the path is "/xl/worksheets/sheet1.xml"
-         * In workbook.xml.rels, it is only "worksheets/sheet1.xml"
-         */
-        $sheetDataXMLFilePathInWorkbookXMLRels = ltrim($sheetDataXMLFilePath, '/xl/');
+        /** @noinspection PhpUnnecessaryFullyQualifiedNameInspection */
+        $escaper = \Box\Spout\Common\Escaper\XLSX::getInstance();
+        $sheetName = $escaper->unescape($escapedSheetName);
 
-        // find the node associated to the given file path
-        $workbookXMLResElement = $this->getWorkbookXMLRelsAsXMLElement();
-        $relationshipNodes = $workbookXMLResElement->xpath('//ns:Relationship[@Target="' . $sheetDataXMLFilePathInWorkbookXMLRels . '"]');
+        $sheetDataXMLFilePath = $this->getSheetDataXMLFilePathForSheetId($sheetId);
 
-        if (count($relationshipNodes) === 1) {
-            $relationshipNode = $relationshipNodes[0];
-            $sheetId = $relationshipNode->getAttribute('Id');
+        return new Sheet(
+            $this->filePath, $sheetDataXMLFilePath,
+            $sheetIndexZeroBased, $sheetName, $isSheetActive,
+            $this->options, $this->sharedStringsHelper
+        );
+    }
 
-            $workbookXMLElement = $this->getWorkbookXMLAsXMLElement();
-            $sheetNodes = $workbookXMLElement->xpath('//ns:sheet[@r:id="' . $sheetId . '"]');
+    /**
+     * @param string $sheetId The sheet ID, as defined in "workbook.xml"
+     * @return string The XML file path describing the sheet inside "workbook.xml.res", for the given sheet ID
+     */
+    protected function getSheetDataXMLFilePathForSheetId($sheetId)
+    {
+        $sheetDataXMLFilePath = '';
 
-            if (count($sheetNodes) === 1) {
-                $sheetNode = $sheetNodes[0];
-                $escapedSheetName = $sheetNode->getAttribute('name');
+        // find the file path of the sheet, by looking at the "workbook.xml.res" file
+        $xmlReader = new XMLReader();
+        if ($xmlReader->openFileInZip($this->filePath, self::WORKBOOK_XML_RELS_FILE_PATH)) {
+            while ($xmlReader->read()) {
+                if ($xmlReader->isPositionedOnStartingNode(self::XML_NODE_RELATIONSHIP)) {
+                    $relationshipSheetId = $xmlReader->getAttribute(self::XML_ATTRIBUTE_ID);
 
-                /** @noinspection PhpUnnecessaryFullyQualifiedNameInspection */
-                $escaper = new \Box\Spout\Common\Escaper\XLSX();
-                $sheetName = $escaper->unescape($escapedSheetName);
+                    if ($relationshipSheetId === $sheetId) {
+                        // In workbook.xml.rels, it is only "worksheets/sheet1.xml"
+                        // In [Content_Types].xml, the path is "/xl/worksheets/sheet1.xml"
+                        $sheetDataXMLFilePath = $xmlReader->getAttribute(self::XML_ATTRIBUTE_TARGET);
+
+                        // sometimes, the sheet data file path already contains "/xl/"...
+                        if (strpos($sheetDataXMLFilePath, '/xl/') !== 0) {
+                            $sheetDataXMLFilePath = '/xl/' . $sheetDataXMLFilePath;
+                            break;
+                        }
+                    }
+                }
             }
+
+            $xmlReader->close();
         }
 
-        return new Sheet($this->filePath, $sheetDataXMLFilePath, $this->sharedStringsHelper, $sheetIndexZeroBased, $sheetName);
-    }
-
-    /**
-     * Returns the default name of the sheet whose data is located
-     * at the given path.
-     *
-     * @param string $sheetDataXMLFilePath Path of the sheet data XML file
-     * @return string The default sheet name
-     */
-    protected function getDefaultSheetName($sheetDataXMLFilePath)
-    {
-        return $this->globalFunctionsHelper->basename($sheetDataXMLFilePath, self::XML_EXTENSION);
-    }
-
-    /**
-     * Returns a representation of the workbook.xml.rels file, ready to be parsed.
-     * The returned value is cached.
-     *
-     * @return \Box\Spout\Reader\Wrapper\SimpleXMLElement XML element representating the workbook.xml.rels file
-     */
-    protected function getWorkbookXMLRelsAsXMLElement()
-    {
-        if (!$this->workbookXMLRelsAsXMLElement) {
-            $this->workbookXMLRelsAsXMLElement = $this->getFileAsXMLElementWithNamespace(
-                self::WORKBOOK_XML_RELS_FILE_PATH,
-                self::MAIN_NAMESPACE_FOR_WORKBOOK_XML_RELS
-            );
-        }
-
-        return $this->workbookXMLRelsAsXMLElement;
-    }
-
-    /**
-     * Returns a representation of the workbook.xml file, ready to be parsed.
-     * The returned value is cached.
-     *
-     * @return \Box\Spout\Reader\Wrapper\SimpleXMLElement XML element representating the workbook.xml.rels file
-     */
-    protected function getWorkbookXMLAsXMLElement()
-    {
-        if (!$this->workbookXMLAsXMLElement) {
-            $this->workbookXMLAsXMLElement = $this->getFileAsXMLElementWithNamespace(
-                self::WORKBOOK_XML_FILE_PATH,
-                self::MAIN_NAMESPACE_FOR_WORKBOOK_XML
-            );
-        }
-
-        return $this->workbookXMLAsXMLElement;
-    }
-
-    /**
-     * Loads the contents of the given file in an XML parser and register the given XPath namespace.
-     *
-     * @param string $xmlFilePath The path of the XML file inside the XLSX file
-     * @param string $mainNamespace The main XPath namespace to register
-     * @return \Box\Spout\Reader\Wrapper\SimpleXMLElement The XML element representing the file
-     */
-    protected function getFileAsXMLElementWithNamespace($xmlFilePath, $mainNamespace)
-    {
-        $xmlContents = $this->globalFunctionsHelper->file_get_contents('zip://' . $this->filePath . '#' . $xmlFilePath);
-
-        $xmlElement = new SimpleXMLElement($xmlContents);
-        $xmlElement->registerXPathNamespace('ns', $mainNamespace);
-
-        return $xmlElement;
+        return $sheetDataXMLFilePath;
     }
 }

@@ -81,6 +81,19 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
+    public function testReadShouldSupportNumberRowsRepeated()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_number_rows_repeated.ods');
+        $expectedRows = [
+            ['foo', 10.43],
+            ['foo', 10.43],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
+     * @return void
+     */
     public function testReadShouldSupportNumberColumnsRepeated()
     {
         $allRows = $this->getAllRowsForFile('sheet_with_number_columns_repeated.ods');
@@ -167,6 +180,21 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
+    public function testReadShouldSupportFormatDatesAndTimesIfSpecified()
+    {
+        $shouldFormatDates = true;
+        $allRows = $this->getAllRowsForFile('sheet_with_dates_and_times.ods', $shouldFormatDates);
+
+        $expectedRows = [
+            ['05/19/2016', '5/19/16', '05/19/2016 16:39:00', '05/19/16 04:39 PM', '5/19/2016'],
+            ['11:29', '13:23:45', '01:23:45', '01:23:45 AM', '01:23:45 PM'],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
+     * @return void
+     */
     public function testReadShouldReturnEmptyStringOnUndefinedCellType()
     {
         $allRows = $this->getAllRowsForFile('sheet_with_undefined_value_type.ods');
@@ -196,15 +224,39 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     /**
      * @return void
      */
-    public function testReadShouldSkipEmptyRow()
+    public function testReadShouldSkipEmptyRowsIfShouldPreserveEmptyRowsNotSet()
     {
-        $allRows = $this->getAllRowsForFile('sheet_with_empty_row.ods');
-        $this->assertEquals(2, count($allRows), 'There should be only 2 rows, because the empty row is skipped');
+        $allRows = $this->getAllRowsForFile('sheet_with_empty_rows.ods');
+
+        $this->assertEquals(3, count($allRows), 'There should be only 3 rows, because the empty rows are skipped');
 
         $expectedRows = [
-            ['ods--11', 'ods--12', 'ods--13'],
-            // row skipped here
+            // skipped row here
             ['ods--21', 'ods--22', 'ods--23'],
+            // skipped row here
+            // skipped row here
+            ['ods--51', 'ods--52', 'ods--53'],
+            ['ods--61', 'ods--62', 'ods--63'],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
+     * @return void
+     */
+    public function testReadShouldReturnEmptyLinesIfShouldPreserveEmptyRowsSet()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_empty_rows.ods', false, true);
+
+        $this->assertEquals(6, count($allRows), 'There should be 6 rows');
+
+        $expectedRows = [
+            [''],
+            ['ods--21', 'ods--22', 'ods--23'],
+            [''],
+            [''],
+            ['ods--51', 'ods--52', 'ods--53'],
+            ['ods--61', 'ods--62', 'ods--63'],
         ];
         $this->assertEquals($expectedRows, $allRows);
     }
@@ -232,7 +284,7 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
      *
      * @return void
      */
-    public function testReadShouldBeProtectedAgainstBillionLaughAttack()
+    public function testReadShouldBeProtectedAgainstBillionLaughsAttack()
     {
         $startTime = microtime(true);
         $fileName = 'attack_billion_laughs.ods';
@@ -364,15 +416,124 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * @expectedException \Box\Spout\Common\Exception\IOException
+     *
+     * @return void
+     */
+    public function testReadWithUnsupportedCustomStreamWrapper()
+    {
+        /** @var \Box\Spout\Reader\ODS\Reader $reader */
+        $reader = ReaderFactory::create(Type::ODS);
+        $reader->open('unsupported://foobar');
+    }
+
+    /**
+     * @expectedException \Box\Spout\Common\Exception\IOException
+     *
+     * @return void
+     */
+    public function testReadWithSupportedCustomStreamWrapper()
+    {
+        /** @var \Box\Spout\Reader\ODS\Reader $reader */
+        $reader = ReaderFactory::create(Type::ODS);
+        $reader->open('php://memory');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/184
+     * @return void
+     */
+    public function testReadShouldInludeRowsWithZerosOnly()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_zeros_in_row.ods');
+
+        $expectedRows = [
+            ['A', 'B', 'C'],
+            ['1', '2', '3'],
+            ['0', '0', '0']
+        ];
+        $this->assertEquals($expectedRows, $allRows, 'There should be only 3 rows, because zeros (0) are valid values');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/184
+     * @return void
+     */
+    public function testReadShouldCreateOutputEmptyCellPreserved()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_empty_cells.ods');
+
+        $expectedRows = [
+            ['A', 'B', 'C'],
+            ['0', '', ''],
+            ['1', '1', '']
+        ];
+        $this->assertEquals($expectedRows, $allRows, 'There should be 3 rows, with equal length');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/195
+     * @return void
+     */
+    public function testReaderShouldNotTrimCellValues()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_untrimmed_strings.ods');
+
+        $expectedRows = [
+            ['A'],
+            [' A '],
+            ["\n\tA\n\t"],
+        ];
+
+        $this->assertEquals($expectedRows, $allRows, 'Cell values should not be trimmed');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/218
+     * @return void
+     */
+    public function testReaderShouldReadTextInHyperlinks()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_hyperlinks.ods');
+
+        $expectedRows = [
+            ['email', 'text'],
+            ['1@example.com', 'text'],
+            ['2@example.com', 'text and https://github.com/box/spout/issues/218 and text'],
+        ];
+
+        $this->assertEquals($expectedRows, $allRows, 'Text in hyperlinks should be read');
+    }
+
+    /**
+     * @return void
+     */
+    public function testReaderShouldReadInlineFontFormattingAsText()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_inline_font_formatting.ods');
+
+        $expectedRows = [
+            ['I am a yellow bird']
+        ];
+
+        $this->assertEquals($expectedRows, $allRows, 'Text formatted inline should be read');
+    }
+
+    /**
      * @param string $fileName
+     * @param bool|void $shouldFormatDates
+     * @param bool|void $shouldPreserveEmptyRows
      * @return array All the read rows the given file
      */
-    private function getAllRowsForFile($fileName)
+    private function getAllRowsForFile($fileName, $shouldFormatDates = false, $shouldPreserveEmptyRows = false)
     {
         $allRows = [];
         $resourcePath = $this->getResourcePath($fileName);
 
+        /** @var \Box\Spout\Reader\ODS\Reader $reader */
         $reader = ReaderFactory::create(Type::ODS);
+        $reader->setShouldFormatDates($shouldFormatDates);
+        $reader->setShouldPreserveEmptyRows($shouldPreserveEmptyRows);
         $reader->open($resourcePath);
 
         foreach ($reader->getSheetIterator() as $sheetIndex => $sheet) {

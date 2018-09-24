@@ -115,31 +115,65 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * @return void
+     */
+    public function testReadShouldSkipEmptyLinesIfShouldPreserveEmptyRowsNotSet()
+    {
+        $allRows = $this->getAllRowsForFile('csv_with_multiple_empty_lines.csv');
+
+        $expectedRows = [
+            // skipped row here
+            ['csv--21', 'csv--22', 'csv--23'],
+            // skipped row here
+            ['csv--41', 'csv--42', 'csv--43'],
+            // skipped row here
+            // last row empty
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
+     * @return void
+     */
+    public function testReadShouldReturnEmptyLinesIfShouldPreserveEmptyRowsSet()
+    {
+        $allRows = $this->getAllRowsForFile(
+            'csv_with_multiple_empty_lines.csv',
+            ',', '"', "\n", EncodingHelper::ENCODING_UTF8,
+            $shouldPreserveEmptyRows = true
+        );
+
+        $expectedRows = [
+            [''],
+            ['csv--21', 'csv--22', 'csv--23'],
+            [''],
+            ['csv--41', 'csv--42', 'csv--43'],
+            [''],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
      * @return array
      */
-    public function dataProviderForTestReadShouldSkipEmptyLines()
+    public function dataProviderForTestReadShouldReadEmptyFile()
     {
         return [
-            ['csv_with_empty_line.csv'],
-            ['csv_with_empty_last_line.csv'],
+            ['csv_empty.csv'],
+            ['csv_all_lines_empty.csv'],
         ];
     }
 
     /**
-     * @dataProvider dataProviderForTestReadShouldSkipEmptyLines
+     * @dataProvider dataProviderForTestReadShouldReadEmptyFile
      *
      * @param string $fileName
      * @return void
      */
-    public function testReadShouldSkipEmptyLines($fileName)
+    public function testReadShouldReadEmptyFile($fileName)
     {
         $allRows = $this->getAllRowsForFile($fileName);
-
-        $expectedRows = [
-            ['csv--11', 'csv--12', 'csv--13'],
-            ['csv--31', 'csv--32', 'csv--33'],
-        ];
-        $this->assertEquals($expectedRows, $allRows);
+        $this->assertEquals([], $allRows);
     }
 
     /**
@@ -182,6 +216,30 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * @return void
+     */
+    public function testReadCustomEOLs()
+    {
+        $allRows = $this->getAllRowsForFile('csv_with_CR_EOL.csv', ',', '"', "\r");
+
+        $expectedRows = [
+            ['csv--11', 'csv--12', 'csv--13'],
+            ['csv--21', 'csv--22', 'csv--23'],
+            ['csv--31', 'csv--32', 'csv--33'],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+    }
+
+    /**
+     * @return void
+     */
+    public function testReadShouldNotTruncateLineBreak()
+    {
+        $allRows = $this->getAllRowsForFile('csv_with_line_breaks.csv', ',');
+        $this->assertEquals("This is,\na comma", $allRows[0][0]);
+    }
+
+    /**
      * @return array
      */
     public function dataProviderForTestReadShouldSkipBom()
@@ -204,7 +262,7 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
      */
     public function testReadShouldSkipBom($fileName, $fileEncoding)
     {
-        $allRows = $this->getAllRowsForFile($fileName, ',', '"', $fileEncoding);
+        $allRows = $this->getAllRowsForFile($fileName, ',', '"', "\n", $fileEncoding);
 
         $expectedRows = [
             ['csv--11', 'csv--12', 'csv--13'],
@@ -243,6 +301,7 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
         $allRows = [];
         $resourcePath = $this->getResourcePath($fileName);
 
+        /** @var \Box\Spout\Common\Helper\GlobalFunctionsHelper|\PHPUnit_Framework_MockObject_MockObject $helperStub */
         $helperStub = $this->getMockBuilder('\Box\Spout\Common\Helper\GlobalFunctionsHelper')
                         ->setMethods(['function_exists'])
                         ->getMock();
@@ -321,17 +380,70 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
+     * https://github.com/box/spout/issues/184
+     * @return void
+     */
+    public function testReadShouldInludeRowsWithZerosOnly()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_zeros_in_row.csv');
+
+        $expectedRows = [
+            ['A', 'B', 'C'],
+            ['1', '2', '3'],
+            ['0', '0', '0']
+        ];
+        $this->assertEquals($expectedRows, $allRows, 'There should be only 3 rows, because zeros (0) are valid values');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/184
+     * @return void
+     */
+    public function testReadShouldCreateOutputEmptyCellPreserved()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_empty_cells.csv');
+
+        $expectedRows = [
+            ['A', 'B', 'C'],
+            ['0', '', ''],
+            ['1', '1', '']
+        ];
+        $this->assertEquals($expectedRows, $allRows, 'There should be 3 rows, with equal length');
+    }
+
+    /**
+     * https://github.com/box/spout/issues/195
+     * @return void
+     */
+    public function testReaderShouldNotTrimCellValues()
+    {
+        $allRows = $this->getAllRowsForFile('sheet_with_untrimmed_strings.csv');
+
+        $expectedRows = [
+            ['A'],
+            [' A '],
+            ["\n\tA\n\t"],
+        ];
+
+        $this->assertEquals($expectedRows, $allRows, 'Cell values should not be trimmed');
+    }
+
+    /**
      * @param string $fileName
      * @param string|void $fieldDelimiter
      * @param string|void $fieldEnclosure
+     * @param string|void $endOfLineCharacter
      * @param string|void $encoding
+     * @param bool|void $shouldPreserveEmptyRows
      * @return array All the read rows the given file
      */
     private function getAllRowsForFile(
         $fileName,
         $fieldDelimiter = ',',
         $fieldEnclosure = '"',
-        $encoding = EncodingHelper::ENCODING_UTF8)
+        $endOfLineCharacter = "\n",
+        $encoding = EncodingHelper::ENCODING_UTF8,
+        $shouldPreserveEmptyRows = false)
     {
         $allRows = [];
         $resourcePath = $this->getResourcePath($fileName);
@@ -341,7 +453,9 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
         $reader
             ->setFieldDelimiter($fieldDelimiter)
             ->setFieldEnclosure($fieldEnclosure)
+            ->setEndOfLineCharacter($endOfLineCharacter)
             ->setEncoding($encoding)
+            ->setShouldPreserveEmptyRows($shouldPreserveEmptyRows)
             ->open($resourcePath);
 
         foreach ($reader->getSheetIterator() as $sheetIndex => $sheet) {
@@ -354,4 +468,51 @@ class ReaderTest extends \PHPUnit_Framework_TestCase
 
         return $allRows;
     }
+
+    /**
+     * @return void
+     */
+    public function testReadCustomStreamWrapper()
+    {
+        $allRows = [];
+        $resourcePath = 'spout://csv_standard';
+
+        // register stream wrapper
+        stream_wrapper_register('spout', SpoutTestStream::CLASS_NAME);
+
+        /** @var \Box\Spout\Reader\CSV\Reader $reader */
+        $reader = ReaderFactory::create(Type::CSV);
+        $reader->open($resourcePath);
+
+        foreach ($reader->getSheetIterator() as $sheet) {
+            foreach ($sheet->getRowIterator() as $row) {
+                $allRows[] = $row;
+            }
+        }
+
+        $reader->close();
+
+        $expectedRows = [
+            ['csv--11', 'csv--12', 'csv--13'],
+            ['csv--21', 'csv--22', 'csv--23'],
+            ['csv--31', 'csv--32', 'csv--33'],
+        ];
+        $this->assertEquals($expectedRows, $allRows);
+
+        // cleanup
+        stream_wrapper_unregister('spout');
+    }
+
+    /**
+     * @expectedException \Box\Spout\Common\Exception\IOException
+     *
+     * @return void
+     */
+    public function testReadWithUnsupportedCustomStreamWrapper()
+    {
+        /** @var \Box\Spout\Reader\CSV\Reader $reader */
+        $reader = ReaderFactory::create(Type::CSV);
+        $reader->open('unsupported://foobar');
+    }
+
 }

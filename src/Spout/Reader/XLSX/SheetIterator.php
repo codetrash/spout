@@ -14,7 +14,7 @@ use Box\Spout\Reader\Exception\NoSheetsFoundException;
  */
 class SheetIterator implements IteratorInterface
 {
-    /** @var Sheet[] The list of sheet present in the file */
+    /** @var \Box\Spout\Reader\XLSX\Sheet[] The list of sheet present in the file */
     protected $sheets;
 
     /** @var int The index of the sheet being read (zero-based) */
@@ -22,14 +22,15 @@ class SheetIterator implements IteratorInterface
 
     /**
      * @param string $filePath Path of the file to be read
+     * @param \Box\Spout\Reader\XLSX\ReaderOptions $options Reader's current options
      * @param \Box\Spout\Reader\XLSX\Helper\SharedStringsHelper $sharedStringsHelper
      * @param \Box\Spout\Common\Helper\GlobalFunctionsHelper $globalFunctionsHelper
      * @throws \Box\Spout\Reader\Exception\NoSheetsFoundException If there are no sheets in the file
      */
-    public function __construct($filePath, $sharedStringsHelper, $globalFunctionsHelper)
+    public function __construct($filePath, $options, $sharedStringsHelper, $globalFunctionsHelper)
     {
         // Fetch all available sheets
-        $sheetHelper = new SheetHelper($filePath, $sharedStringsHelper, $globalFunctionsHelper);
+        $sheetHelper = new SheetHelper($filePath, $options, $sharedStringsHelper, $globalFunctionsHelper);
         $this->sheets = $sheetHelper->getSheets();
 
         if (count($this->sheets) === 0) {
@@ -52,7 +53,7 @@ class SheetIterator implements IteratorInterface
      * Checks if current position is valid
      * @link http://php.net/manual/en/iterator.valid.php
      *
-     * @return boolean
+     * @return bool
      */
     public function valid()
     {
@@ -67,7 +68,8 @@ class SheetIterator implements IteratorInterface
      */
     public function next()
     {
-        if (array_key_exists($this->currentSheetIndex, $this->sheets)) {
+        // Using isset here because it is way faster than array_key_exists...
+        if (isset($this->sheets[$this->currentSheetIndex])) {
             $currentSheet = $this->sheets[$this->currentSheetIndex];
             $currentSheet->getRowIterator()->end();
 
@@ -79,7 +81,7 @@ class SheetIterator implements IteratorInterface
      * Return the current element
      * @link http://php.net/manual/en/iterator.current.php
      *
-     * @return Sheet
+     * @return \Box\Spout\Reader\XLSX\Sheet
      */
     public function current()
     {
